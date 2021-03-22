@@ -1,0 +1,243 @@
+<!doctype html>
+<html>
+
+<head>
+    <meta http-equiv='Content-Type' content='text/html; charset=UTF-8'>
+    <title> webrtc test </title>
+    <style type="text/css">
+        .room {
+            cursor: pointer;
+        }
+
+        div.select {
+            display: inline-block;
+            margin: 0 0 1em 0;
+        }
+    </style>
+
+
+    <script type='text/javascript'>
+
+        window.localStorage.setItem('debug', '*');
+
+        let frames = 0;
+
+        async function publish() {
+
+            let videoElement = document.getElementById('video_container_publish');
+            let serverurl = document.getElementById("serverurl").value;
+
+            const constraints = {
+                video: { width: { exact: 640 }, height: { exact: 480 } },
+                audio: false
+            }
+
+            const stream = await navigator.mediaDevices.getUserMedia(constraints);
+
+            videoElement.srcObject = stream;
+
+            var pc = new RTCPeerConnection({
+                encodedInsertableStreams: true,
+            });
+
+            let transceiver = await pc.addTransceiver(stream.getVideoTracks()[0], {
+                direction: "sendonly",
+                streams: [stream],
+            });
+
+
+            // await pc.addTransceiver(stream.getAudioTracks()[0], {
+            //     direction: "sendonly",
+            //     streams: [stream],
+            // });
+
+            setupSenderTransform(transceiver.sender);
+
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+
+
+            console.log(offer.sdp);
+
+            let res = await fetch(serverurl + "/rtc/v1/publish", {
+                method: 'post',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    sdp: offer.sdp
+                })
+            })
+
+            console.dir(res)
+            let ret = await res.json()
+
+            let answer = new RTCSessionDescription({
+                type: 'answer',
+                sdp: ret.sdp
+            })
+
+            await pc.setRemoteDescription(answer);
+        }
+
+
+        async function play() {
+
+            let videoElement = document.getElementById('video_container_play');
+            let serverurl = document.getElementById("serverurl").value;
+
+
+            var pc = new RTCPeerConnection({
+                encodedInsertableStreams: true,
+            });
+
+            const transceiver = await pc.addTransceiver("video", {
+                direction: "recvonly",
+            });
+
+            // await pc.addTransceiver("audio", {
+            //     direction: "recvonly",
+            // });
+
+            setupReceiverTransform(transceiver.receiver);
+
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+
+
+            pc.ontrack = (e) => {
+                if (!videoElement.srcObject) {
+                    videoElement.srcObject = e.streams[0]
+                }
+            }
+
+
+            let res = await fetch(serverurl + "/rtc/v1/play", {
+                method: 'post',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    sdp: offer.sdp
+                })
+            })
+
+            let ret = await res.json()
+
+            console.dir(ret)
+
+            let answer = new RTCSessionDescription({
+                type: 'answer',
+                sdp: ret.sdp
+            })
+
+            await pc.setRemoteDescription(answer);
+        }
+
+
+        function setupSenderTransform(sender) {
+            console.log('sender kind=%s', sender.track.kind);
+            const senderStreams = sender.createEncodedStreams();
+            const readableStream = senderStreams.readableStream;
+            const writableStream = senderStreams.writableStream;
+
+            const transformStream = new TransformStream({
+                transform: encodeFunction,
+            });
+            readableStream
+                .pipeThrough(transformStream)
+                .pipeTo(writableStream);
+        }
+
+        function setupReceiverTransform(receiver) {
+            console.log('receiver kind=%s', receiver.track.kind);
+            const receiverStreams = receiver.createEncodedStreams();
+            const readableStream = receiverStreams.readableStream;
+            const writableStream = receiverStreams.writableStream;
+
+            const transformStream = new TransformStream({
+                transform: decodeFunction,
+            });
+            readableStream
+                .pipeThrough(transformStream)
+                .pipeTo(writableStream);
+        }
+
+        function encodeFunction(chunk, controller) {
+
+            const newData = new ArrayBuffer(chunk.data.byteLength + 4);
+            const newView = new DataView(newData);
+
+            let metadata = new ArrayBuffer(4);
+            let metaView = new DataView(metadata);
+            metaView.setUint32(0, frames++);
+
+            const data = new Uint8Array(newData);
+            data.set(new Uint8Array(chunk.data));
+            data.set(new Uint8Array(metadata), chunk.data.byteLength);
+            chunk.data = newData;
+
+            controller.enqueue(chunk);
+
+            console.log("Send frame index ===", frames);
+        }
+
+
+        function decodeFunction(chunk, controller) {
+
+            const view = new DataView(chunk.data);
+            //last 4 bytes
+            const count = view.getUint32(chunk.data.byteLength - 4);
+            chunk.data = chunk.data.slice(0, chunk.data.byteLength - 4);
+            controller.enqueue(chunk);
+
+            console.log("Receive frame index ===", count);
+        }
+
+    </script>
+
+</head>
+
+<body>
+    <h1>WebRTC Demo</h1>
+    <br />
+
+
+    <div>
+        <form>
+            <input type="text" size="50" id="serverurl" name="serverurl" value="http://localhost:5000"><br><br>
+        </form>
+        <button onclick="publish()">Publish</button>
+        <br><br>
+        <button onclick="play()">Play</button>
+    </div>
+
+
+
+    <div id="conference">
+        publish:
+        <br />
+        <div id="container">
+            <video id="video_container_publish" playsinline controls autoplay muted width="640" height="480"></video>
+        </div>
+        <br />
+
+    </div>
+
+
+
+
+    <div id="conference">
+        play:
+        <br />
+        <div id="container">
+            <video id="video_container_play" playsinline controls autoplay muted width="640" height="480"></video>
+        </div>
+        <br />
+
+    </div>
+
+</body>
+
+
+</html>
